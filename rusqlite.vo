@@ -3,59 +3,153 @@ package rusqlite
 import "encoding/json"
 
 type DB struct {
-ID uint32 `json:"id"`
+    ID uint32 `json:"id"`
 }
 
-type QueryResult struct {
-Rows []any `json:"rows"`
+type Row map[string]any
+
+type idReq struct {
+    ID uint32 `json:"id"`
+}
+
+func marshalReq(v any) (string, error) {
+    b, err := json.Marshal(v)
+    if err != nil {
+        return "", err
+    }
+    return string(b), nil
 }
 
 func Open(path string) (DB, error) {
-req, _ := json.Marshal(struct {
-Path string `json:"path"`
-}{path})
-resp, err := RawCall("open", string(req))
-if err != nil {
-return DB{}, err
+    req, err := marshalReq(struct {
+        Path string `json:"path"`
+    }{path})
+    if err != nil {
+        return DB{}, err
+    }
+    resp, err := RawCall("open", req)
+    if err != nil {
+        return DB{}, err
+    }
+    var db DB
+    if err = json.Unmarshal(resp, &db); err != nil {
+        return DB{}, err
+    }
+    return db, nil
 }
-var db DB
-if err = json.Unmarshal(resp, &db); err != nil {
-return DB{}, err
-}
-return db, nil
+
+func OpenInMemory() (DB, error) {
+    resp, err := RawCall("open_memory", "{}")
+    if err != nil {
+        return DB{}, err
+    }
+    var db DB
+    if err = json.Unmarshal(resp, &db); err != nil {
+        return DB{}, err
+    }
+    return db, nil
 }
 
 func (db DB) Close() error {
-req, _ := json.Marshal(struct {
-ID uint32 `json:"id"`
-}{db.ID})
-_, err := RawCall("close", string(req))
-return err
+    req, err := marshalReq(idReq{db.ID})
+    if err != nil {
+        return err
+    }
+    _, err = RawCall("close", req)
+    return err
 }
 
 func (db DB) Exec(sql string) error {
-req, _ := json.Marshal(struct {
-ID  uint32 `json:"id"`
-SQL string `json:"sql"`
-}{db.ID, sql})
-_, err := RawCall("exec", string(req))
-return err
+    req, err := marshalReq(struct {
+        ID  uint32 `json:"id"`
+        SQL string `json:"sql"`
+    }{db.ID, sql})
+    if err != nil {
+        return err
+    }
+    _, err = RawCall("exec", req)
+    return err
 }
 
-func (db DB) Query(sql string) ([]any, error) {
-req, _ := json.Marshal(struct {
-ID  uint32 `json:"id"`
-SQL string `json:"sql"`
-}{db.ID, sql})
-resp, err := RawCall("query", string(req))
-if err != nil {
-return nil, err
+func (db DB) Execute(sql string) (uint64, error) {
+    req, err := marshalReq(struct {
+        ID  uint32 `json:"id"`
+        SQL string `json:"sql"`
+    }{db.ID, sql})
+    if err != nil {
+        return 0, err
+    }
+    resp, err := RawCall("execute", req)
+    if err != nil {
+        return 0, err
+    }
+    var out struct {
+        RowsAffected uint64 `json:"rows_affected"`
+    }
+    if err = json.Unmarshal(resp, &out); err != nil {
+        return 0, err
+    }
+    return out.RowsAffected, nil
 }
-var out QueryResult
-if err = json.Unmarshal(resp, &out); err != nil {
-return nil, err
+
+func (db DB) Query(sql string) ([]Row, error) {
+    req, err := marshalReq(struct {
+        ID  uint32 `json:"id"`
+        SQL string `json:"sql"`
+    }{db.ID, sql})
+    if err != nil {
+        return nil, err
+    }
+    resp, err := RawCall("query", req)
+    if err != nil {
+        return nil, err
+    }
+    var out struct {
+        Rows []Row `json:"rows"`
+    }
+    if err = json.Unmarshal(resp, &out); err != nil {
+        return nil, err
+    }
+    return out.Rows, nil
 }
-return out.Rows, nil
+
+func (db DB) QueryOne(sql string) (Row, error) {
+    req, err := marshalReq(struct {
+        ID  uint32 `json:"id"`
+        SQL string `json:"sql"`
+    }{db.ID, sql})
+    if err != nil {
+        return nil, err
+    }
+    resp, err := RawCall("query_one", req)
+    if err != nil {
+        return nil, err
+    }
+    var out struct {
+        Row Row `json:"row"`
+    }
+    if err = json.Unmarshal(resp, &out); err != nil {
+        return nil, err
+    }
+    return out.Row, nil
+}
+
+func (db DB) LastInsertRowID() (int64, error) {
+    req, err := marshalReq(idReq{db.ID})
+    if err != nil {
+        return 0, err
+    }
+    resp, err := RawCall("last_insert_rowid", req)
+    if err != nil {
+        return 0, err
+    }
+    var out struct {
+        ID int64 `json:"id"`
+    }
+    if err = json.Unmarshal(resp, &out); err != nil {
+        return 0, err
+    }
+    return out.ID, nil
 }
 
 func RawCall(op string, input string) ([]byte, error)
