@@ -5,7 +5,6 @@ use std::sync::Mutex;
 use lazy_static::lazy_static;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 #[cfg(feature = "native")]
@@ -19,26 +18,6 @@ mod native {
     }
 
     static NEXT_ID: AtomicU32 = AtomicU32::new(1);
-
-    #[derive(Deserialize)]
-    struct OpenReq {
-        path: String,
-    }
-
-    #[derive(Deserialize)]
-    struct IdReq {
-        id: u32,
-    }
-
-    #[derive(Deserialize)]
-    struct SqlReq {
-        id: u32,
-        sql: String,
-    }
-
-    fn empty_ok() -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
-    }
 
     fn get_db<'a>(dbs: &'a HashMap<u32, Connection>, id: u32) -> Result<&'a Connection, String> {
         dbs.get(&id).ok_or_else(|| format!("invalid db id {}", id))
@@ -71,66 +50,64 @@ mod native {
         }
     }
 
-    fn handle_open(input: &str) -> Result<Vec<u8>, String> {
-        let req: OpenReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
-        let conn = Connection::open(&req.path).map_err(|e| e.to_string())?;
+    fn open_impl(path: &str) -> Result<u32, String> {
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
         dbs.insert(id, conn);
-        serde_json::to_vec(&json!({ "id": id })).map_err(|e| e.to_string())
+        Ok(id)
     }
 
-    fn handle_open_memory(_input: &str) -> Result<Vec<u8>, String> {
+    fn open_in_memory_impl() -> Result<u32, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
         dbs.insert(id, conn);
-        serde_json::to_vec(&json!({ "id": id })).map_err(|e| e.to_string())
+        Ok(id)
     }
 
-    fn handle_close(input: &str) -> Result<Vec<u8>, String> {
-        let req: IdReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn close_impl(id: u64) -> Result<(), String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let mut dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        dbs.remove(&req.id)
-            .ok_or_else(|| format!("invalid db id {}", req.id))?;
-        empty_ok()
+        dbs.remove(&id)
+            .ok_or_else(|| format!("invalid db id {}", id))?;
+        Ok(())
     }
 
-    fn handle_exec(input: &str) -> Result<Vec<u8>, String> {
-        let req: SqlReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn exec_impl(id: u64, sql: &str) -> Result<(), String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let mut dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        let db = get_db_mut(&mut dbs, req.id)?;
-        db.execute_batch(&req.sql).map_err(|e| e.to_string())?;
-        empty_ok()
+        let db = get_db_mut(&mut dbs, id)?;
+        db.execute_batch(sql).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
-    fn handle_execute(input: &str) -> Result<Vec<u8>, String> {
-        let req: SqlReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn execute_impl(id: u64, sql: &str) -> Result<u64, String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let mut dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        let db = get_db_mut(&mut dbs, req.id)?;
-        let rows_affected = db.execute(&req.sql, []).map_err(|e| e.to_string())?;
-        serde_json::to_vec(&json!({ "rows_affected": rows_affected as u64 }))
-            .map_err(|e| e.to_string())
+        let db = get_db_mut(&mut dbs, id)?;
+        let rows_affected = db.execute(sql, []).map_err(|e| e.to_string())?;
+        Ok(rows_affected as u64)
     }
 
-    fn handle_query(input: &str) -> Result<Vec<u8>, String> {
-        let req: SqlReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn query_impl(id: u64, sql: &str) -> Result<Vec<u8>, String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        let db = get_db(&dbs, req.id)?;
+        let db = get_db(&dbs, id)?;
 
-        let mut stmt = db.prepare(&req.sql).map_err(|e| e.to_string())?;
+        let mut stmt = db.prepare(sql).map_err(|e| e.to_string())?;
         let col_names: Vec<String> = stmt
             .column_names()
             .iter()
@@ -145,14 +122,14 @@ mod native {
         serde_json::to_vec(&json!({ "rows": out })).map_err(|e| e.to_string())
     }
 
-    fn handle_query_one(input: &str) -> Result<Vec<u8>, String> {
-        let req: SqlReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn query_one_impl(id: u64, sql: &str) -> Result<Vec<u8>, String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        let db = get_db(&dbs, req.id)?;
+        let db = get_db(&dbs, id)?;
 
-        let mut stmt = db.prepare(&req.sql).map_err(|e| e.to_string())?;
+        let mut stmt = db.prepare(sql).map_err(|e| e.to_string())?;
         let col_names: Vec<String> = stmt
             .column_names()
             .iter()
@@ -167,35 +144,89 @@ mod native {
         serde_json::to_vec(&json!({ "row": out })).map_err(|e| e.to_string())
     }
 
-    fn handle_last_insert_rowid(input: &str) -> Result<Vec<u8>, String> {
-        let req: IdReq = serde_json::from_str(input).map_err(|e| e.to_string())?;
+    fn last_insert_rowid_impl(id: u64) -> Result<i64, String> {
+        let id = u32::try_from(id).map_err(|_| format!("id out of range: {id}"))?;
         let dbs = DBS
             .lock()
             .map_err(|_| "rusqlite lock poisoned".to_string())?;
-        let db = get_db(&dbs, req.id)?;
-        serde_json::to_vec(&json!({ "id": db.last_insert_rowid() })).map_err(|e| e.to_string())
+        let db = get_db(&dbs, id)?;
+        Ok(db.last_insert_rowid())
     }
 
-    fn dispatch(op: &str, input: &str) -> Result<Vec<u8>, String> {
-        match op {
-            "open" => handle_open(input),
-            "open_memory" => handle_open_memory(input),
-            "close" => handle_close(input),
-            "exec" => handle_exec(input),
-            "execute" => handle_execute(input),
-            "query" => handle_query(input),
-            "query_one" => handle_query_one(input),
-            "last_insert_rowid" => handle_last_insert_rowid(input),
-            _ => Err(format!("unsupported operation: {op}")),
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeOpen")]
+    pub fn native_open(call: &mut ExternCallContext) -> ExternResult {
+        let path = call.arg_str(0);
+        match open_impl(path) {
+            Ok(id) => {
+                call.ret_u64(0, id as u64);
+                write_nil_error(call, 1);
+            }
+            Err(msg) => {
+                call.ret_u64(0, 0);
+                write_error_to(call, 1, &msg);
+            }
         }
+        ExternResult::Ok
     }
 
-    #[vo_fn("github.com/vo-lang/rusqlite", "RawCall")]
-    pub fn raw_call(call: &mut ExternCallContext) -> ExternResult {
-        let op = call.arg_str(0);
-        let input = call.arg_str(1);
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeOpenInMemory")]
+    pub fn native_open_in_memory(call: &mut ExternCallContext) -> ExternResult {
+        match open_in_memory_impl() {
+            Ok(id) => {
+                call.ret_u64(0, id as u64);
+                write_nil_error(call, 1);
+            }
+            Err(msg) => {
+                call.ret_u64(0, 0);
+                write_error_to(call, 1, &msg);
+            }
+        }
+        ExternResult::Ok
+    }
 
-        match dispatch(op, input) {
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeClose")]
+    pub fn native_close(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        match close_impl(id) {
+            Ok(()) => write_nil_error(call, 0),
+            Err(msg) => write_error_to(call, 0, &msg),
+        }
+        ExternResult::Ok
+    }
+
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeExec")]
+    pub fn native_exec(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        let sql = call.arg_str(1);
+        match exec_impl(id, sql) {
+            Ok(()) => write_nil_error(call, 0),
+            Err(msg) => write_error_to(call, 0, &msg),
+        }
+        ExternResult::Ok
+    }
+
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeExecute")]
+    pub fn native_execute(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        let sql = call.arg_str(1);
+        match execute_impl(id, sql) {
+            Ok(rows_affected) => {
+                call.ret_u64(0, rows_affected);
+                write_nil_error(call, 1);
+            }
+            Err(msg) => {
+                call.ret_u64(0, 0);
+                write_error_to(call, 1, &msg);
+            }
+        }
+        ExternResult::Ok
+    }
+
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeQuery")]
+    pub fn native_query(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        let sql = call.arg_str(1);
+        match query_impl(id, sql) {
             Ok(bytes) => {
                 let out_ref = call.alloc_bytes(&bytes);
                 call.ret_ref(0, out_ref);
@@ -203,6 +234,40 @@ mod native {
             }
             Err(msg) => {
                 call.ret_nil(0);
+                write_error_to(call, 1, &msg);
+            }
+        }
+        ExternResult::Ok
+    }
+
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeQueryOne")]
+    pub fn native_query_one(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        let sql = call.arg_str(1);
+        match query_one_impl(id, sql) {
+            Ok(bytes) => {
+                let out_ref = call.alloc_bytes(&bytes);
+                call.ret_ref(0, out_ref);
+                write_nil_error(call, 1);
+            }
+            Err(msg) => {
+                call.ret_nil(0);
+                write_error_to(call, 1, &msg);
+            }
+        }
+        ExternResult::Ok
+    }
+
+    #[vo_fn("github.com/vo-lang/rusqlite", "nativeLastInsertRowID")]
+    pub fn native_last_insert_rowid(call: &mut ExternCallContext) -> ExternResult {
+        let id = call.arg_u64(0);
+        match last_insert_rowid_impl(id) {
+            Ok(row_id) => {
+                call.ret_i64(0, row_id);
+                write_nil_error(call, 1);
+            }
+            Err(msg) => {
+                call.ret_i64(0, 0);
                 write_error_to(call, 1, &msg);
             }
         }

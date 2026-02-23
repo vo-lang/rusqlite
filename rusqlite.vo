@@ -8,148 +8,71 @@ type DB struct {
 
 type Row map[string]any
 
-type idReq struct {
-    ID uint32 `json:"id"`
-}
-
-func marshalReq(v any) (string, error) {
-    b, err := json.Marshal(v)
-    if err != nil {
-        return "", err
-    }
-    return string(b), nil
-}
-
 func Open(path string) (DB, error) {
-    req, err := marshalReq(struct {
-        Path string `json:"path"`
-    }{path})
+    id, err := nativeOpen(path)
     if err != nil {
         return DB{}, err
     }
-    resp, err := RawCall("open", req)
-    if err != nil {
-        return DB{}, err
-    }
-    var db DB
-    if err = json.Unmarshal(resp, &db); err != nil {
-        return DB{}, err
-    }
-    return db, nil
+    return DB{ID: id}, nil
 }
 
 func OpenInMemory() (DB, error) {
-    resp, err := RawCall("open_memory", "{}")
+    id, err := nativeOpenInMemory()
     if err != nil {
         return DB{}, err
     }
-    var db DB
-    if err = json.Unmarshal(resp, &db); err != nil {
-        return DB{}, err
-    }
-    return db, nil
+    return DB{ID: id}, nil
 }
 
 func (db DB) Close() error {
-    req, err := marshalReq(idReq{db.ID})
-    if err != nil {
-        return err
-    }
-    _, err = RawCall("close", req)
-    return err
+    return nativeClose(db.ID)
 }
 
 func (db DB) Exec(sql string) error {
-    req, err := marshalReq(struct {
-        ID  uint32 `json:"id"`
-        SQL string `json:"sql"`
-    }{db.ID, sql})
-    if err != nil {
-        return err
-    }
-    _, err = RawCall("exec", req)
-    return err
+    return nativeExec(db.ID, sql)
 }
 
 func (db DB) Execute(sql string) (uint64, error) {
-    req, err := marshalReq(struct {
-        ID  uint32 `json:"id"`
-        SQL string `json:"sql"`
-    }{db.ID, sql})
-    if err != nil {
-        return 0, err
-    }
-    resp, err := RawCall("execute", req)
-    if err != nil {
-        return 0, err
-    }
-    var out struct {
-        RowsAffected uint64 `json:"rows_affected"`
-    }
-    if err = json.Unmarshal(resp, &out); err != nil {
-        return 0, err
-    }
-    return out.RowsAffected, nil
+    return nativeExecute(db.ID, sql)
 }
 
 func (db DB) Query(sql string) ([]Row, error) {
-    req, err := marshalReq(struct {
-        ID  uint32 `json:"id"`
-        SQL string `json:"sql"`
-    }{db.ID, sql})
-    if err != nil {
-        return nil, err
-    }
-    resp, err := RawCall("query", req)
+    payload, err := nativeQuery(db.ID, sql)
     if err != nil {
         return nil, err
     }
     var out struct {
         Rows []Row `json:"rows"`
     }
-    if err = json.Unmarshal(resp, &out); err != nil {
+    if err = json.Unmarshal(payload, &out); err != nil {
         return nil, err
     }
     return out.Rows, nil
 }
 
 func (db DB) QueryOne(sql string) (Row, error) {
-    req, err := marshalReq(struct {
-        ID  uint32 `json:"id"`
-        SQL string `json:"sql"`
-    }{db.ID, sql})
-    if err != nil {
-        return nil, err
-    }
-    resp, err := RawCall("query_one", req)
+    payload, err := nativeQueryOne(db.ID, sql)
     if err != nil {
         return nil, err
     }
     var out struct {
         Row Row `json:"row"`
     }
-    if err = json.Unmarshal(resp, &out); err != nil {
+    if err = json.Unmarshal(payload, &out); err != nil {
         return nil, err
     }
     return out.Row, nil
 }
 
 func (db DB) LastInsertRowID() (int64, error) {
-    req, err := marshalReq(idReq{db.ID})
-    if err != nil {
-        return 0, err
-    }
-    resp, err := RawCall("last_insert_rowid", req)
-    if err != nil {
-        return 0, err
-    }
-    var out struct {
-        ID int64 `json:"id"`
-    }
-    if err = json.Unmarshal(resp, &out); err != nil {
-        return 0, err
-    }
-    return out.ID, nil
+    return nativeLastInsertRowID(db.ID)
 }
 
-func RawCall(op string, input string) ([]byte, error)
+func nativeOpen(path string) (uint32, error)
+func nativeOpenInMemory() (uint32, error)
+func nativeClose(id uint32) error
+func nativeExec(id uint32, sql string) error
+func nativeExecute(id uint32, sql string) (uint64, error)
+func nativeQuery(id uint32, sql string) ([]byte, error)
+func nativeQueryOne(id uint32, sql string) ([]byte, error)
+func nativeLastInsertRowID(id uint32) (int64, error)
