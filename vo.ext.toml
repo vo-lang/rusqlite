@@ -1,0 +1,3 @@
+[extension]
+name = "rusqlite"
+path = "rust/target/{profile}/libvo_rusqlite"

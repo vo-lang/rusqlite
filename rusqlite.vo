@@ -1,0 +1,61 @@
+package rusqlite
+
+import "encoding/json"
+
+type DB struct {
+ID uint32 `json:"id"`
+}
+
+type QueryResult struct {
+Rows []any `json:"rows"`
+}
+
+func Open(path string) (DB, error) {
+req, _ := json.Marshal(struct {
+Path string `json:"path"`
+}{path})
+resp, err := RawCall("open", string(req))
+if err != nil {
+return DB{}, err
+}
+var db DB
+if err = json.Unmarshal(resp, &db); err != nil {
+return DB{}, err
+}
+return db, nil
+}
+
+func (db DB) Close() error {
+req, _ := json.Marshal(struct {
+ID uint32 `json:"id"`
+}{db.ID})
+_, err := RawCall("close", string(req))
+return err
+}
+
+func (db DB) Exec(sql string) error {
+req, _ := json.Marshal(struct {
+ID  uint32 `json:"id"`
+SQL string `json:"sql"`
+}{db.ID, sql})
+_, err := RawCall("exec", string(req))
+return err
+}
+
+func (db DB) Query(sql string) ([]any, error) {
+req, _ := json.Marshal(struct {
+ID  uint32 `json:"id"`
+SQL string `json:"sql"`
+}{db.ID, sql})
+resp, err := RawCall("query", string(req))
+if err != nil {
+return nil, err
+}
+var out QueryResult
+if err = json.Unmarshal(resp, &out); err != nil {
+return nil, err
+}
+return out.Rows, nil
+}
+
+func RawCall(op string, input string) ([]byte, error)
